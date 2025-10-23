@@ -1,5 +1,7 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from ..models import Lesson, Attempt
+from django.utils import timezone
+from django.db import models
 import random
 
 def get_recommendation(student):
@@ -18,7 +20,7 @@ def get_recommendation(student):
     lessons = Lesson.objects.all()
     recommendations = []
 
-    now = datetime.now()
+    now = timezone.now()  # Use timezone-aware datetime
 
     for lesson in lessons:
         attempts = Attempt.objects.filter(student=student, lesson=lesson).order_by('-timestamp')
@@ -26,9 +28,21 @@ def get_recommendation(student):
         # Feature 1: time since last activity (days)
         if attempts.exists():
             last_attempt = attempts.first()
-            time_since_last_activity = (now - last_attempt.timestamp).days
-            avg_correctness_7d = attempts.filter(timestamp__gte=now - timedelta(days=7)).aggregate(avg=models.Avg('correctness'))['avg'] or 0
-            avg_correctness_30d = attempts.filter(timestamp__gte=now - timedelta(days=30)).aggregate(avg=models.Avg('correctness'))['avg'] or 0
+            last_time = last_attempt.timestamp
+            # Make aware if naive
+            if timezone.is_naive(last_time):
+                last_time = timezone.make_aware(last_time, timezone.get_current_timezone())
+
+            time_since_last_activity = (now - last_time).days
+
+            avg_correctness_7d = attempts.filter(
+                timestamp__gte=now - timedelta(days=7)
+            ).aggregate(avg=models.Avg('correctness'))['avg'] or 0
+
+            avg_correctness_30d = attempts.filter(
+                timestamp__gte=now - timedelta(days=30)
+            ).aggregate(avg=models.Avg('correctness'))['avg'] or 0
+
             attempts_to_completion_ratio = len(attempts) / max(1, lesson.order_index)
             hints_rate = sum([a.hints_used for a in attempts]) / max(1, len(attempts))
         else:
@@ -41,10 +55,10 @@ def get_recommendation(student):
         # Feature 2: progress gap (0=complete, 1=not started)
         progress_gap = 1 if not attempts.exists() else 1 - attempts_to_completion_ratio
 
-        # Feature 3: tag mastery gap (simplified: assume 0.5 if attempted)
+        # Feature 3: tag mastery gap (simplified)
         tag_mastery_gap = 0.5 if attempts.exists() else 1.0
 
-        # Feature 4: difficulty drift (assuming course difficulty - correctness)
+        # Feature 4: difficulty drift
         difficulty_drift = (lesson.course.difficulty / 5) - (avg_correctness_30d)
 
         # Weighted scoring
@@ -78,10 +92,7 @@ def get_recommendation(student):
     # Sort by confidence descending
     recommendations.sort(key=lambda x: x["confidence"], reverse=True)
 
-    # Main recommendation
     top = recommendations[0] if recommendations else None
-
-    # Top 2 alternatives
     alternatives = recommendations[1:3] if len(recommendations) > 1 else []
 
     return {

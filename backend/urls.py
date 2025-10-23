@@ -1,9 +1,5 @@
-from django.urls import path
-from django.http import JsonResponse
-
-def home(request):
-    return JsonResponse({"message": "Hello, world!"})
+from django.urls import path, include
 
 urlpatterns = [
-    path("", home),
+    path('api/', include('api.urls')),
 ]

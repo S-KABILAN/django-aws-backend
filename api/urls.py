@@ -1,6 +1,9 @@
 from django.urls import path
-from .views import hello_world
+from .views import StudentOverview, StudentRecommendation, AttemptCreate, AnalyzeCode
 
 urlpatterns = [
-    path('hello/', hello_world),
+    path('students/<int:pk>/overview/', StudentOverview.as_view()),
+    path('students/<int:pk>/recommendation/', StudentRecommendation.as_view()),
+    path('attempts/', AttemptCreate.as_view()),
+    path('analyze-code/', AnalyzeCode.as_view()),
 ]

@@ -50,6 +50,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'api.middleware.DisableThrottlingMiddleware',  # Disable throttling completely
 ]
 
 # ----------------------------------------------------------------------
@@ -121,6 +122,22 @@ CORS_ALLOW_ALL_ORIGINS = True  # ✅ Works for local & testing
 #     "http://127.0.0.1:5173",
 #     "http://ai-course-coach-frontend.s3-website-us-east-1.amazonaws.com",
 # ]
+
+# ----------------------------------------------------------------------
+# REST FRAMEWORK CONFIGURATION
+# ----------------------------------------------------------------------
+REST_FRAMEWORK = {
+    'DEFAULT_THROTTLE_CLASSES': [],
+    'DEFAULT_THROTTLE_RATES': {},
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'DEFAULT_AUTHENTICATION_CLASSES': [],  # Disable authentication for development
+    'DEFAULT_PERMISSION_CLASSES': [],      # Disable permissions for development
+    'DEFAULT_PAGINATION_CLASS': None,       # Disable pagination
+    'DEFAULT_FILTER_BACKENDS': [],         # Disable filtering
+    'DEFAULT_SCHEMA_CLASS': None,          # Disable schema generation
+}
 
 # ----------------------------------------------------------------------
 # DEFAULT FIELD TYPE

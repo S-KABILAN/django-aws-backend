@@ -1,4 +1,7 @@
-Django>=4.0
-djangorestframework
-gunicorn
-psycopg2-binary   # if using PostgreSQL
+Django>=5.2.7
+djangorestframework>=3.16.1
+django-cors-headers>=4.3.1
+pytest>=8.4.2
+pytest-django>=4.11.1
+gunicorn>=21.2.0
+psycopg2-binary>=2.9.9

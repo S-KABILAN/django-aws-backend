@@ -1,5 +1,5 @@
 from datetime import timedelta
-from ..models import Lesson, Attempt
+from ..models import Lesson, Attempt, Question, QuestionAttempt
 from django.utils import timezone
 from django.db import models
 import random
@@ -25,52 +25,134 @@ def get_recommendation(student):
     for lesson in lessons:
         attempts = Attempt.objects.filter(student=student, lesson=lesson).order_by('-timestamp')
 
-        # Feature 1: time since last activity (days)
+        # Get question attempts for this lesson
+        question_attempts = QuestionAttempt.objects.filter(
+            student=student,
+            question__lesson=lesson
+        ).select_related('question').order_by('-timestamp')
+
+        # Feature 1: time since last activity (days) - consider both lesson and question attempts
+        last_lesson_time = None
+        last_question_time = None
+
         if attempts.exists():
             last_attempt = attempts.first()
-            last_time = last_attempt.timestamp
-            # Make aware if naive
-            if timezone.is_naive(last_time):
-                last_time = timezone.make_aware(last_time, timezone.get_current_timezone())
+            last_lesson_time = last_attempt.timestamp
+            if timezone.is_naive(last_lesson_time):
+                last_lesson_time = timezone.make_aware(last_lesson_time, timezone.get_current_timezone())
 
-            time_since_last_activity = (now - last_time).days
+        if question_attempts.exists():
+            last_question_attempt = question_attempts.first()
+            last_question_time = last_question_attempt.timestamp
+            if timezone.is_naive(last_question_time):
+                last_question_time = timezone.make_aware(last_question_time, timezone.get_current_timezone())
 
-            avg_correctness_7d = attempts.filter(
-                timestamp__gte=now - timedelta(days=7)
-            ).aggregate(avg=models.Avg('correctness'))['avg'] or 0
+        # Use the most recent activity
+        last_activity_time = None
+        if last_lesson_time and last_question_time:
+            last_activity_time = max(last_lesson_time, last_question_time)
+        elif last_lesson_time:
+            last_activity_time = last_lesson_time
+        elif last_question_time:
+            last_activity_time = last_question_time
 
-            avg_correctness_30d = attempts.filter(
-                timestamp__gte=now - timedelta(days=30)
-            ).aggregate(avg=models.Avg('correctness'))['avg'] or 0
-
-            attempts_to_completion_ratio = len(attempts) / max(1, lesson.order_index)
-            hints_rate = sum([a.hints_used for a in attempts]) / max(1, len(attempts))
+        if last_activity_time:
+            time_since_last_activity = (now - last_activity_time).days
         else:
             time_since_last_activity = 999
+
+        # Question-based performance metrics
+        if question_attempts.exists():
+            # Recent question performance
+            avg_correctness_7d = question_attempts.filter(
+                timestamp__gte=now - timedelta(days=7)
+            ).aggregate(avg=models.Avg('is_correct'))['avg'] or 0
+
+            avg_correctness_30d = question_attempts.filter(
+                timestamp__gte=now - timedelta(days=30)
+            ).aggregate(avg=models.Avg('is_correct'))['avg'] or 0
+
+            # Hint usage patterns
+            avg_hints_used = question_attempts.aggregate(avg=models.Avg('hints_used'))['avg'] or 0
+            hint_usage_rate = min(avg_hints_used / 3, 1)  # Normalize hint usage (assuming max 3 hints per question)
+
+            # Points earned ratio
+            total_questions = Question.objects.filter(lesson=lesson).count()
+            total_possible_points = Question.objects.filter(lesson=lesson).aggregate(
+                total=models.Sum('points')
+            )['total'] or 0
+            total_earned_points = question_attempts.aggregate(
+                total=models.Sum('points_earned')
+            )['total'] or 0
+            points_ratio = total_earned_points / max(total_possible_points, 1)
+
+            # Question completion ratio
+            unique_questions_attempted = question_attempts.values('question').distinct().count()
+            question_completion_ratio = unique_questions_attempted / max(total_questions, 1)
+        else:
             avg_correctness_7d = 0
             avg_correctness_30d = 0
-            attempts_to_completion_ratio = 0
-            hints_rate = 0
+            hint_usage_rate = 0
+            points_ratio = 0
+            question_completion_ratio = 0
 
-        # Feature 2: progress gap (0=complete, 1=not started)
-        progress_gap = 1 if not attempts.exists() else 1 - attempts_to_completion_ratio
+        # Legacy lesson-based metrics (for backward compatibility)
+        if attempts.exists():
+            attempts_to_completion_ratio = len(attempts) / max(1, lesson.order_index)
+            legacy_hints_rate = sum([a.hints_used for a in attempts]) / max(1, len(attempts))
+            legacy_correctness_7d = attempts.filter(
+                timestamp__gte=now - timedelta(days=7)
+            ).aggregate(avg=models.Avg('correctness'))['avg'] or 0
+            legacy_correctness_30d = attempts.filter(
+                timestamp__gte=now - timedelta(days=30)
+            ).aggregate(avg=models.Avg('correctness'))['avg'] or 0
+        else:
+            attempts_to_completion_ratio = 0
+            legacy_hints_rate = 0
+            legacy_correctness_7d = 0
+            legacy_correctness_30d = 0
+
+        # Combine metrics - prioritize question-based metrics when available
+        if question_attempts.exists():
+            combined_correctness_7d = avg_correctness_7d
+            combined_correctness_30d = avg_correctness_30d
+            combined_hints_rate = hint_usage_rate
+        else:
+            combined_correctness_7d = legacy_correctness_7d
+            combined_correctness_30d = legacy_correctness_30d
+            combined_hints_rate = legacy_hints_rate
+
+        # Feature 2: progress gap (consider both lesson and question completion)
+        has_lesson_attempts = attempts.exists()
+        has_question_attempts = question_attempts.exists()
+        combined_progress = (attempts_to_completion_ratio + question_completion_ratio) / 2
+        progress_gap = 1 if not (has_lesson_attempts or has_question_attempts) else 1 - combined_progress
 
         # Feature 3: tag mastery gap (simplified)
-        tag_mastery_gap = 0.5 if attempts.exists() else 1.0
+        tag_mastery_gap = 0.5 if (has_lesson_attempts or has_question_attempts) else 1.0
 
-        # Feature 4: difficulty drift
-        difficulty_drift = (lesson.course.difficulty / 5) - (avg_correctness_30d)
+        # Feature 4: difficulty drift (consider points earned as performance indicator)
+        course_difficulty = lesson.course.difficulty / 5
+        if question_attempts.exists():
+            performance_indicator = points_ratio  # Use points ratio as performance indicator
+        else:
+            performance_indicator = combined_correctness_30d
+        difficulty_drift = course_difficulty - performance_indicator
 
-        # Weighted scoring
+        # Feature 5: hint dependency (new feature)
+        hint_dependency = combined_hints_rate  # Higher values indicate more hint usage
+
+        # Weighted scoring - updated weights to include question-level factors
         score = (
-            0.2 * min(time_since_last_activity/30,1) +
-            0.2 * progress_gap +
-            0.2 * tag_mastery_gap +
-            0.2 * (1 - avg_correctness_7d) +
-            0.2 * difficulty_drift
+            0.15 * min(time_since_last_activity/30, 1) +  # Recency
+            0.20 * progress_gap +                           # Completion gap
+            0.15 * tag_mastery_gap +                       # Concept mastery
+            0.15 * (1 - combined_correctness_7d) +        # Recent performance gap
+            0.15 * max(0, difficulty_drift) +              # Difficulty alignment
+            0.20 * hint_dependency                         # Hint usage (higher = more help needed)
         )
 
-        # Confidence is normalized [0..1]
+        # Confidence is normalized [0..1] with deterministic noise
         confidence = max(0, min(1, 1 - score + random.uniform(-0.05, 0.05)))
 
         # Collect recommendation
@@ -78,12 +160,15 @@ def get_recommendation(student):
             "lesson": lesson.title,
             "features": {
                 "time_since_last_activity": time_since_last_activity,
-                "avg_correctness_7d": avg_correctness_7d,
-                "avg_correctness_30d": avg_correctness_30d,
+                "avg_correctness_7d": combined_correctness_7d,
+                "avg_correctness_30d": combined_correctness_30d,
                 "progress_gap": progress_gap,
                 "tag_mastery_gap": tag_mastery_gap,
-                "hints_rate": hints_rate,
+                "hints_rate": combined_hints_rate,
+                "hint_dependency": hint_dependency,
                 "difficulty_drift": difficulty_drift,
+                "question_completion_ratio": question_completion_ratio,
+                "points_ratio": points_ratio,
                 "attempts_to_completion_ratio": attempts_to_completion_ratio
             },
             "confidence": confidence

@@ -2,7 +2,6 @@ from datetime import timedelta
 from ..models import Lesson, Attempt, Question, QuestionAttempt
 from django.utils import timezone
 from django.db import models
-import random
 
 def get_recommendation(student):
     """
@@ -13,8 +12,7 @@ def get_recommendation(student):
     - top 2 alternatives
     """
 
-    # Deterministic randomness based on student id
-    random.seed(student.id)
+    # No longer using random numbers - confidence is now data-driven
 
     # Get all lessons
     lessons = Lesson.objects.all()
@@ -142,18 +140,78 @@ def get_recommendation(student):
         # Feature 5: hint dependency (new feature)
         hint_dependency = combined_hints_rate  # Higher values indicate more hint usage
 
-        # Weighted scoring - updated weights to include question-level factors
+        # Weighted scoring - heavily prioritize lessons with recent activity
+        # Lower score = higher priority (better recommendation)
+        
+        # Boost lessons with recent attempts (much higher priority)
+        recent_activity_boost = 0
+        if question_attempts.exists():
+            recent_attempts = question_attempts.filter(
+                timestamp__gte=now - timedelta(days=7)
+            ).count()
+            recent_activity_boost = min(recent_attempts * 0.3, 1.0)  # Up to 30% boost for recent activity
+        
         score = (
-            0.15 * min(time_since_last_activity/30, 1) +  # Recency
-            0.20 * progress_gap +                           # Completion gap
-            0.15 * tag_mastery_gap +                       # Concept mastery
+            0.25 * min(time_since_last_activity/30, 1) +  # Recency (higher weight)
+            0.15 * progress_gap +                           # Completion gap
+            0.10 * tag_mastery_gap +                       # Concept mastery
             0.15 * (1 - combined_correctness_7d) +        # Recent performance gap
-            0.15 * max(0, difficulty_drift) +              # Difficulty alignment
-            0.20 * hint_dependency                         # Hint usage (higher = more help needed)
-        )
+            0.10 * max(0, difficulty_drift) +              # Difficulty alignment
+            0.15 * hint_dependency +                       # Hint usage (higher = more help needed)
+            0.10 * (1 - question_completion_ratio)        # Question completion (prioritize incomplete lessons)
+        ) - recent_activity_boost  # Subtract boost to lower score (better recommendation)
 
-        # Confidence is normalized [0..1] with deterministic noise
-        confidence = max(0, min(1, 1 - score + random.uniform(-0.05, 0.05)))
+        # Confidence is based on recent activity and data freshness
+        # Make confidence more responsive to recent attempts
+        
+        # Recent activity factor (most important for confidence)
+        recent_activity_factor = 0
+        if question_attempts.exists():
+            # Count attempts in last 7 days
+            recent_attempts_7d = question_attempts.filter(
+                timestamp__gte=now - timedelta(days=7)
+            ).count()
+            # Count attempts in last 3 days (even more recent)
+            recent_attempts_3d = question_attempts.filter(
+                timestamp__gte=now - timedelta(days=3)
+            ).count()
+            
+            # More gradual confidence boost - each attempt adds less
+            recent_activity_factor = min(0.25, recent_attempts_3d * 0.05 + recent_attempts_7d * 0.02)
+        
+        # Data freshness factor
+        data_freshness_factor = 0
+        if last_activity_time:
+            days_since_activity = (now - last_activity_time).days
+            if days_since_activity <= 1:
+                data_freshness_factor = 0.15  # Very fresh data
+            elif days_since_activity <= 3:
+                data_freshness_factor = 0.10  # Fresh data
+            elif days_since_activity <= 7:
+                data_freshness_factor = 0.05  # Recent data
+            else:
+                data_freshness_factor = 0.02  # Stale data
+        
+        # Performance factor (based on recent performance)
+        performance_factor = 0
+        if question_attempts.exists():
+            recent_performance = combined_correctness_7d
+            performance_factor = recent_performance * 0.2
+        
+        # Base confidence starts lower and builds up with activity
+        base_confidence = 0.3  # Start with lower base confidence
+        
+        # Calculate dynamic confidence
+        confidence = max(0.1, min(0.95, 
+            base_confidence + 
+            recent_activity_factor + 
+            data_freshness_factor + 
+            performance_factor
+        ))
+        
+        # Add small variation based on lesson to make it more dynamic
+        lesson_variation = (lesson.id % 7) * 0.02  # Small variation based on lesson ID
+        confidence = max(0.1, min(0.95, confidence + lesson_variation))
 
         # Collect recommendation
         recommendations.append({

@@ -72,7 +72,7 @@ class Command(BaseCommand):
                 ]
             },
             {
-                "name": "Machine Learning Fundamentals",
+                "name": "Machine Learning",
                 "description": "Introduction to ML algorithms",
                 "difficulty": 5,
                 "progress": 0.0,  # Not started

@@ -26,17 +26,36 @@ class CourseList(generics.ListAPIView):
     serializer_class = CourseSerializer
     throttle_classes = []  # Explicitly disable throttling
 
-class LessonList(generics.ListAPIView):
-    queryset = Lesson.objects.select_related('course').all()
-    serializer_class = LessonSerializer
+class LessonList(APIView):
     throttle_classes = []  # Explicitly disable throttling
 
-    def get_queryset(self):
-        queryset = Lesson.objects.select_related('course').all()
-        course_id = self.request.query_params.get('course')
+    def get(self, request):
+        course_id = request.query_params.get('course')
+        student_id = request.query_params.get('student')
+        
+        # Get lessons for the course
+        lessons_queryset = Lesson.objects.select_related('course').all()
         if course_id:
-            queryset = queryset.filter(course_id=course_id)
-        return queryset
+            lessons_queryset = lessons_queryset.filter(course_id=course_id)
+        
+        lessons = list(lessons_queryset.order_by('order_index'))
+        
+        # If student_id is provided, check which lessons have been attempted
+        if student_id:
+            # Get attempted lesson IDs from question attempts
+            attempted_lesson_ids = set(
+                QuestionAttempt.objects.filter(student_id=student_id)
+                .values_list('question__lesson_id', flat=True)
+                .distinct()
+            )
+            
+            # Add attempted flag to each lesson
+            for lesson in lessons:
+                lesson.attempted = lesson.id in attempted_lesson_ids
+        
+        # Serialize the lessons
+        serializer = LessonSerializer(lessons, many=True)
+        return Response(serializer.data)
 
 # Student Overview
 class StudentOverview(APIView):
@@ -49,8 +68,9 @@ class StudentOverview(APIView):
             return Response({"error": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
 
         # Optimize queries with select_related and prefetch_related
-        courses = Course.objects.prefetch_related('lessons').all()
+        courses = Course.objects.prefetch_related('lessons__questions').all()
         student_attempts = Attempt.objects.filter(student=student).select_related('lesson__course')
+        student_question_attempts = QuestionAttempt.objects.filter(student=student).select_related('question__lesson__course')
 
         # Create course lookup for IDs
         course_lookup = {course.name: course.id for course in courses}
@@ -59,7 +79,18 @@ class StudentOverview(APIView):
         attempt_counts = {}
         last_activities = {}
         attempted_lesson_ids = set()
+        
+        # Track question completions per course
+        question_completions = {}
+        total_questions_per_course = {}
 
+        # Calculate total questions per course
+        for course in courses:
+            total_questions = sum(lesson.questions.count() for lesson in course.lessons.all())
+            total_questions_per_course[course.id] = total_questions
+            question_completions[course.id] = set()
+
+        # Process lesson attempts
         for attempt in student_attempts:
             course_id = attempt.lesson.course.id
             lesson_id = attempt.lesson.id
@@ -74,6 +105,18 @@ class StudentOverview(APIView):
             # Track attempted lessons
             attempted_lesson_ids.add(lesson_id)
 
+        # Process question attempts to track completions
+        for question_attempt in student_question_attempts:
+            course_id = question_attempt.question.lesson.course.id
+            question_id = question_attempt.question.id
+            
+            # Track last activity per course (from question attempts too)
+            if course_id not in last_activities or question_attempt.timestamp > last_activities[course_id]:
+                last_activities[course_id] = question_attempt.timestamp
+            
+            # Count attempted questions (any attempt counts as progress, not just correct ones)
+            question_completions[course_id].add(question_id)
+
         data = []
         for course in courses:
             lessons = list(course.lessons.order_by('order_index'))
@@ -86,10 +129,20 @@ class StudentOverview(APIView):
                     next_up = lesson
                     break
 
+            # Calculate dynamic progress based on question attempts (any attempt counts)
+            attempted_questions = len(question_completions.get(course.id, set()))
+            total_questions = total_questions_per_course.get(course.id, 0)
+            
+            # Progress is based on question attempts (more fair - any attempt counts as progress)
+            if total_questions > 0:
+                progress = attempted_questions / total_questions
+            else:
+                progress = 0
+
             data.append({
                 "course_id": course.id,
                 "course_name": course.name,
-                "progress": attempt_counts.get(course.id, 0) / lesson_count if lesson_count > 0 else 0,
+                "progress": progress,
                 "last_activity": last_activities.get(course.id),
                 "next_up": next_up.title if next_up else None
             })

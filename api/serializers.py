@@ -12,6 +12,8 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 class LessonSerializer(serializers.ModelSerializer):
+    attempted = serializers.BooleanField(read_only=True, required=False)
+    
     class Meta:
         model = Lesson
         fields = "__all__"

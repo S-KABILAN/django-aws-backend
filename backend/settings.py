@@ -16,6 +16,7 @@ ALLOWED_HOSTS = [
     'localhost',
     '54.235.61.181',  # your EC2 public IP
     'ai-course-coach-frontend.s3-website-us-east-1.amazonaws.com',  # your S3 frontend
+    'd3g1iy9h61nr0z.cloudfront.net',
 ]
 
 # ----------------------------------------------------------------------
